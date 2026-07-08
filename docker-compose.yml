@@ -1,0 +1,68 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT_INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: notif_user
+      POSTGRES_PASSWORD: notif_pass
+      POSTGRES_DB: notifications
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  producer:
+    build: ./producer
+    ports:
+      - "3000:3000"
+    environment:
+      KAFKA_BROKER: kafka:29092
+      PORT: 3000
+    depends_on:
+      - kafka
+      - redis
+      - postgres
+    restart: on-failure
+
+  consumer:
+    build: ./consumer
+    environment:
+      KAFKA_BROKER: kafka:29092
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://notif_user:notif_pass@postgres:5432/notifications
+    depends_on:
+      - kafka
+      - redis
+      - postgres
+    restart: on-failure
+
+volumes:
+  postgres_data:
