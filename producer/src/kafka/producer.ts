@@ -1,4 +1,5 @@
 import { Kafka, Producer } from 'kafkajs';
+import { NOTIFICATIONS_TOPIC, ensureTopics } from './topics';
 
 const kafka = new Kafka({
   clientId: 'notification-producer',
@@ -17,8 +18,8 @@ export function getProducer(): Promise<Producer> {
       console.log(JSON.stringify({ event: 'kafka_producer_disconnected' }));
       connecting = null;
     });
-    connecting = producer
-      .connect()
+    connecting = ensureTopics(kafka)
+      .then(() => producer.connect())
       .then(() => {
         console.log(JSON.stringify({ event: 'kafka_producer_connected' }));
         return producer;
@@ -35,8 +36,8 @@ export async function publishNotification(tenantId: string, payload: string): Pr
   const p = await getProducer();
   try {
     await p.send({
-      topic: `notifications.${tenantId}`,
-      messages: [{ value: payload }],
+      topic: NOTIFICATIONS_TOPIC,
+      messages: [{ key: tenantId, value: payload }],
     });
   } catch (err) {
     // A dead connection won't heal by itself: drop it so the next request reconnects.

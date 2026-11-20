@@ -1,11 +1,10 @@
 import type { Admin } from 'kafkajs';
 import { consumerLag } from '../metrics';
-
-const TOPIC_PATTERN = /^notifications\..+/;
+import { NOTIFICATIONS_TOPIC } from './topics';
 
 // Lag = latest offset in each partition minus the offset this group has committed.
 export async function updateConsumerLag(admin: Admin, groupId: string): Promise<void> {
-  const topics = (await admin.listTopics()).filter((t) => TOPIC_PATTERN.test(t));
+  const topics = (await admin.listTopics()).filter((t) => t === NOTIFICATIONS_TOPIC);
   if (topics.length === 0) {
     consumerLag.set(0);
     return;
