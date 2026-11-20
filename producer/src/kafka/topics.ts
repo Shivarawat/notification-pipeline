@@ -4,6 +4,7 @@ import type { Kafka } from 'kafkajs';
 // land on the same partition (ordered), and a new tenant needs no new topic.
 export const NOTIFICATIONS_TOPIC = 'notifications';
 export const NOTIFICATIONS_PARTITIONS = 6;
+export const DEAD_LETTER_TOPIC = 'notifications.dlq';
 
 export async function ensureTopics(kafka: Kafka): Promise<void> {
   const admin = kafka.admin();
@@ -11,7 +12,10 @@ export async function ensureTopics(kafka: Kafka): Promise<void> {
   try {
     await admin.createTopics({
       waitForLeaders: true,
-      topics: [{ topic: NOTIFICATIONS_TOPIC, numPartitions: NOTIFICATIONS_PARTITIONS }],
+      topics: [
+        { topic: NOTIFICATIONS_TOPIC, numPartitions: NOTIFICATIONS_PARTITIONS },
+        { topic: DEAD_LETTER_TOPIC, numPartitions: 1 },
+      ],
     });
   } finally {
     await admin.disconnect();

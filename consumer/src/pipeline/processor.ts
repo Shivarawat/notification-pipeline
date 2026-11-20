@@ -1,4 +1,5 @@
 import type { NotificationEvent } from '../types';
+import { RetriesExhaustedError, RetryOptions, withRetry } from './retry';
 
 export type Outcome = 'delivered' | 'duplicate' | 'rate_limited' | 'dead_lettered';
 
@@ -15,6 +16,8 @@ export interface ProcessorDeps {
   markDelivered(messageId: string): Promise<void>;
   isRateLimited(tenantId: string, messageId: string): Promise<boolean>;
   deliver(event: NotificationEvent): Promise<void>;
+  deadLetter(event: NotificationEvent, error: string, attempts: number): Promise<void>;
+  retry: RetryOptions;
 }
 
 export async function processEvent(event: NotificationEvent, deps: ProcessorDeps): Promise<ProcessResult> {
@@ -24,9 +27,16 @@ export async function processEvent(event: NotificationEvent, deps: ProcessorDeps
   if (await deps.isRateLimited(event.tenantId, event.messageId)) {
     return { event, outcome: 'rate_limited', attempts: 0 };
   }
-  await deps.deliver(event);
-  await deps.markDelivered(event.messageId);
-  return { event, outcome: 'delivered', attempts: 1 };
+  try {
+    const attempts = await withRetry(() => deps.deliver(event), deps.retry);
+    await deps.markDelivered(event.messageId);
+    return { event, outcome: 'delivered', attempts };
+  } catch (err) {
+    const attempts = err instanceof RetriesExhaustedError ? err.attempts : 1;
+    const error = err instanceof RetriesExhaustedError ? String(err.lastError) : String(err);
+    await deps.deadLetter(event, error, attempts);
+    return { event, outcome: 'dead_lettered', attempts, error };
+  }
 }
 
 // Tenants are processed in parallel; each tenant's events stay in their original order.

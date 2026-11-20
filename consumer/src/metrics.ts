@@ -33,6 +33,20 @@ export const batchDuration = new Histogram({
   registers: [registry],
 });
 
+export const deliveryAttempts = new Counter({
+  name: 'consumer_delivery_attempts_total',
+  help: 'Webhook delivery attempts by result',
+  labelNames: ['result'] as const,
+  registers: [registry],
+});
+
+export const webhookDuration = new Histogram({
+  name: 'consumer_webhook_duration_seconds',
+  help: 'Time for one webhook call',
+  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2],
+  registers: [registry],
+});
+
 export const consumerLag = new Gauge({
   name: 'consumer_lag_messages',
   help: 'Messages written to Kafka but not yet committed by this consumer group',

@@ -4,7 +4,9 @@ import { redis } from '../redis/client';
 import { createIdempotencyStore } from '../redis/idempotency';
 import { createRateLimiter } from '../redis/ratelimit';
 import { logResults } from '../db/logger';
-import { deliver } from '../delivery/worker';
+import { createWebhookDelivery } from '../delivery/webhook';
+import { createDeadLetterPublisher } from './deadletter';
+import { ensureSchema } from '../db/schema';
 import { processBatch, ProcessorDeps } from '../pipeline/processor';
 import { batchDuration, endToEndLatency, eventsConsumed, eventsProcessed } from '../metrics';
 import { startLagReporter } from './lag';
@@ -24,12 +26,6 @@ const rateLimiter = createRateLimiter(redis, {
   windowMs: 60_000,
 });
 
-const deps: ProcessorDeps = {
-  isDelivered: idempotency.isDelivered,
-  markDelivered: idempotency.markDelivered,
-  isRateLimited: rateLimiter.isRateLimited,
-  deliver,
-};
 
 function parse(value: Buffer | null): NotificationEvent | null {
   if (!value) return null;
@@ -43,6 +39,20 @@ function parse(value: Buffer | null): NotificationEvent | null {
 
 export async function startConsumer(): Promise<void> {
   await ensureTopics(kafka);
+  await ensureSchema();
+
+  const deps: ProcessorDeps = {
+    isDelivered: idempotency.isDelivered,
+    markDelivered: idempotency.markDelivered,
+    isRateLimited: rateLimiter.isRateLimited,
+    deliver: createWebhookDelivery(process.env.WEBHOOK_URL || 'http://localhost:8081/webhook'),
+    deadLetter: await createDeadLetterPublisher(kafka),
+    retry: {
+      maxAttempts: Number(process.env.DELIVERY_MAX_ATTEMPTS || 4),
+      baseDelayMs: 100,
+      maxDelayMs: 2000,
+    },
+  };
 
   const consumer = kafka.consumer({ groupId: GROUP_ID });
   await consumer.connect();
