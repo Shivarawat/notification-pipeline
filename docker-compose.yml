@@ -25,6 +25,7 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_HEAP_OPTS: "-Xmx256m -Xms128m"
     mem_limit: 512m
+    restart: on-failure
 
   redis:
     image: redis:7-alpine
@@ -58,8 +59,12 @@ services:
 
   consumer:
     build: ./consumer
+    ports:
+      - "9100:9100"
     environment:
       KAFKA_BROKER: kafka:29092
+      METRICS_PORT: 9100
+      RATE_LIMIT: ${RATE_LIMIT:-100}
       REDIS_URL: redis://redis:6379
       DATABASE_URL: postgresql://notif_user:notif_pass@postgres:5432/notifications
     depends_on:
@@ -67,6 +72,16 @@ services:
       - redis
       - postgres
     restart: on-failure
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - producer
+      - consumer
 
 volumes:
   postgres_data:
