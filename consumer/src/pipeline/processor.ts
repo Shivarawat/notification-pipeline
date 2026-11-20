@@ -39,21 +39,35 @@ export async function processEvent(event: NotificationEvent, deps: ProcessorDeps
   }
 }
 
-// Tenants are processed in parallel; each tenant's events stay in their original order.
-export async function processBatch(events: NotificationEvent[], deps: ProcessorDeps): Promise<ProcessResult[]> {
-  const byTenant = new Map<string, NotificationEvent[]>();
+// Ordering is kept per user: one user's events run one after another, different users run in parallel
+// (at most maxConcurrency at a time). Duplicates share a messageId and therefore a user, so the
+// check-then-mark idempotency in processEvent never races with itself.
+export async function processBatch(
+  events: NotificationEvent[],
+  deps: ProcessorDeps,
+  maxConcurrency = 50
+): Promise<ProcessResult[]> {
+  const byUser = new Map<string, NotificationEvent[]>();
   for (const event of events) {
-    const queue = byTenant.get(event.tenantId) ?? [];
+    const key = `${event.tenantId}:${event.userId}`;
+    const queue = byUser.get(key) ?? [];
     queue.push(event);
-    byTenant.set(event.tenantId, queue);
+    byUser.set(key, queue);
   }
 
-  const perTenant = await Promise.all(
-    [...byTenant.values()].map(async (queue) => {
-      const results: ProcessResult[] = [];
-      for (const event of queue) results.push(await processEvent(event, deps));
-      return results;
-    })
-  );
-  return perTenant.flat();
+  const queues = [...byUser.values()];
+  const results: ProcessResult[][] = new Array(queues.length);
+  let next = 0;
+
+  async function worker(): Promise<void> {
+    while (next < queues.length) {
+      const index = next++;
+      const queueResults: ProcessResult[] = [];
+      for (const event of queues[index]) queueResults.push(await processEvent(event, deps));
+      results[index] = queueResults;
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(maxConcurrency, queues.length) }, worker));
+  return results.flat();
 }

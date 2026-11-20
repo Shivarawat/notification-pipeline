@@ -76,7 +76,7 @@ export async function startConsumer(): Promise<void> {
       const events = batch.messages.map((m) => parse(m.value)).filter((e): e is NotificationEvent => e !== null);
       eventsConsumed.inc(batch.messages.length);
 
-      const results = await processBatch(events, deps);
+      const results = await processBatch(events, deps, Number(process.env.DELIVERY_CONCURRENCY || 50));
       await logResults(results);
 
       const now = Date.now();
