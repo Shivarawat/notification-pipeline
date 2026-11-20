@@ -1,7 +1,8 @@
 import { Kafka } from 'kafkajs';
 import type { NotificationEvent } from '../types';
-import { isDuplicate } from '../redis/idempotency';
-import { isRateLimited } from '../redis/ratelimit';
+import { redis } from '../redis/client';
+import { createIdempotencyStore } from '../redis/idempotency';
+import { createRateLimiter } from '../redis/ratelimit';
 import { logResults } from '../db/logger';
 import { deliver } from '../delivery/worker';
 import { processBatch, ProcessorDeps } from '../pipeline/processor';
@@ -17,7 +18,18 @@ const kafka = new Kafka({
 
 const GROUP_ID = 'notification-group';
 
-const deps: ProcessorDeps = { isDuplicate, isRateLimited, deliver };
+const idempotency = createIdempotencyStore(redis);
+const rateLimiter = createRateLimiter(redis, {
+  limit: Number(process.env.RATE_LIMIT || 100),
+  windowMs: 60_000,
+});
+
+const deps: ProcessorDeps = {
+  isDelivered: idempotency.isDelivered,
+  markDelivered: idempotency.markDelivered,
+  isRateLimited: rateLimiter.isRateLimited,
+  deliver,
+};
 
 function parse(value: Buffer | null): NotificationEvent | null {
   if (!value) return null;

@@ -11,19 +11,21 @@ export interface ProcessResult {
 
 // Everything the processor needs from the outside world, so tests can pass in fakes.
 export interface ProcessorDeps {
-  isDuplicate(messageId: string): Promise<boolean>;
-  isRateLimited(tenantId: string): Promise<boolean>;
+  isDelivered(messageId: string): Promise<boolean>;
+  markDelivered(messageId: string): Promise<void>;
+  isRateLimited(tenantId: string, messageId: string): Promise<boolean>;
   deliver(event: NotificationEvent): Promise<void>;
 }
 
 export async function processEvent(event: NotificationEvent, deps: ProcessorDeps): Promise<ProcessResult> {
-  if (await deps.isDuplicate(event.messageId)) {
+  if (await deps.isDelivered(event.messageId)) {
     return { event, outcome: 'duplicate', attempts: 0 };
   }
-  if (await deps.isRateLimited(event.tenantId)) {
+  if (await deps.isRateLimited(event.tenantId, event.messageId)) {
     return { event, outcome: 'rate_limited', attempts: 0 };
   }
   await deps.deliver(event);
+  await deps.markDelivered(event.messageId);
   return { event, outcome: 'delivered', attempts: 1 };
 }
 
