@@ -1,18 +1,24 @@
 import { Pool } from 'pg';
-import type { NotificationEvent } from '../types';
+import type { ProcessResult } from '../pipeline/processor';
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL ||
     'postgresql://notif_user:notif_pass@localhost:5432/notifications',
 });
 
-export async function logEvent(
-  event: NotificationEvent,
-  status: 'delivered' | 'rate_limited' | 'duplicate'
-): Promise<void> {
+// One INSERT for the whole batch: unnest() turns the parallel arrays into rows.
+export async function logResults(results: ProcessResult[]): Promise<void> {
+  if (results.length === 0) return;
   await pool.query(
     `INSERT INTO notification_events (tenant_id, user_id, message, channel, status, message_id)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-    [event.tenantId, event.userId, event.message, event.channel, status, event.messageId]
+     SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[])`,
+    [
+      results.map((r) => r.event.tenantId),
+      results.map((r) => r.event.userId),
+      results.map((r) => r.event.message),
+      results.map((r) => r.event.channel),
+      results.map((r) => r.outcome),
+      results.map((r) => r.event.messageId),
+    ]
   );
 }

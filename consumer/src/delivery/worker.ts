@@ -1,6 +1,6 @@
 import type { NotificationEvent } from '../types';
 
-export function deliver(event: NotificationEvent): void {
+export async function deliver(event: NotificationEvent): Promise<void> {
   console.log(JSON.stringify({
     event: 'notification_delivered',
     tenantId: event.tenantId,

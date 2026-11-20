@@ -2,10 +2,12 @@ import { Kafka } from 'kafkajs';
 import type { NotificationEvent } from '../types';
 import { isDuplicate } from '../redis/idempotency';
 import { isRateLimited } from '../redis/ratelimit';
-import { logEvent } from '../db/logger';
+import { logResults } from '../db/logger';
 import { deliver } from '../delivery/worker';
-import { endToEndLatency, eventsConsumed, eventsProcessed } from '../metrics';
+import { processBatch, ProcessorDeps } from '../pipeline/processor';
+import { batchDuration, endToEndLatency, eventsConsumed, eventsProcessed } from '../metrics';
 import { startLagReporter } from './lag';
+import { NOTIFICATIONS_PARTITIONS, NOTIFICATIONS_TOPIC, ensureTopics } from './topics';
 
 const kafka = new Kafka({
   clientId: 'notification-consumer',
@@ -15,7 +17,21 @@ const kafka = new Kafka({
 
 const GROUP_ID = 'notification-group';
 
+const deps: ProcessorDeps = { isDuplicate, isRateLimited, deliver };
+
+function parse(value: Buffer | null): NotificationEvent | null {
+  if (!value) return null;
+  try {
+    return JSON.parse(value.toString()) as NotificationEvent;
+  } catch {
+    console.error(JSON.stringify({ event: 'invalid_message_skipped', value: value.toString().slice(0, 200) }));
+    return null;
+  }
+}
+
 export async function startConsumer(): Promise<void> {
+  await ensureTopics(kafka);
+
   const consumer = kafka.consumer({ groupId: GROUP_ID });
   await consumer.connect();
 
@@ -23,43 +39,34 @@ export async function startConsumer(): Promise<void> {
   await admin.connect();
   startLagReporter(admin, GROUP_ID);
 
-  await consumer.subscribe({ topic: /^notifications\..+/, fromBeginning: false });
-
+  // fromBeginning: a partition with no committed offset starts at the oldest message,
+  // so nothing published before the group's first commit is skipped.
+  await consumer.subscribe({ topic: NOTIFICATIONS_TOPIC, fromBeginning: true });
   console.log(JSON.stringify({ event: 'kafka_consumer_connected' }));
 
   await consumer.run({
-    eachMessage: async ({ message }) => {
-      if (!message.value) return;
+    partitionsConsumedConcurrently: NOTIFICATIONS_PARTITIONS,
+    eachBatchAutoResolve: false,
+    eachBatch: async ({ batch, resolveOffset, heartbeat, isRunning, isStale }) => {
+      if (!isRunning() || isStale() || batch.messages.length === 0) return;
 
-      const event: NotificationEvent = JSON.parse(message.value.toString());
-      const start = Date.now();
-      eventsConsumed.inc();
+      const endTimer = batchDuration.startTimer();
+      const events = batch.messages.map((m) => parse(m.value)).filter((e): e is NotificationEvent => e !== null);
+      eventsConsumed.inc(batch.messages.length);
 
-      if (await isDuplicate(event.messageId)) {
-        console.log(JSON.stringify({ event: 'duplicate_skipped', messageId: event.messageId }));
-        await logEvent(event, 'duplicate');
-        eventsProcessed.inc({ outcome: 'duplicate' });
-        return;
+      const results = await processBatch(events, deps);
+      await logResults(results);
+
+      const now = Date.now();
+      for (const r of results) {
+        eventsProcessed.inc({ outcome: r.outcome });
+        if (r.outcome === 'delivered') endToEndLatency.observe((now - Date.parse(r.event.timestamp)) / 1000);
       }
 
-      if (await isRateLimited(event.tenantId)) {
-        console.log(JSON.stringify({ event: 'rate_limited', tenantId: event.tenantId, messageId: event.messageId }));
-        await logEvent(event, 'rate_limited');
-        eventsProcessed.inc({ outcome: 'rate_limited' });
-        return;
-      }
-
-      deliver(event);
-      await logEvent(event, 'delivered');
-      eventsProcessed.inc({ outcome: 'delivered' });
-      endToEndLatency.observe((Date.now() - Date.parse(event.timestamp)) / 1000);
-
-      console.log(JSON.stringify({
-        event: 'message_processed',
-        messageId: event.messageId,
-        tenantId: event.tenantId,
-        durationMs: Date.now() - start,
-      }));
+      // Only mark the batch done after it's logged: a crash before this line replays the batch (at-least-once).
+      resolveOffset(batch.messages[batch.messages.length - 1].offset);
+      await heartbeat();
+      endTimer();
     },
   });
 }
