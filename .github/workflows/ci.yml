@@ -1,0 +1,71 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [producer, consumer]
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    defaults:
+      run:
+        working-directory: ${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ matrix.service }}/package-lock.json
+      - run: npm ci
+      - run: npm test
+        env:
+          REDIS_URL: redis://localhost:6379
+
+  e2e:
+    name: end-to-end smoke test
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: start the stack
+        run: docker compose up -d --build
+      - name: wait for the producer
+        run: |
+          for i in $(seq 1 60); do curl -sf localhost:3000/health && exit 0; sleep 3; done
+          docker compose logs; exit 1
+      - name: send a notification and a duplicate
+        run: |
+          body='{"tenantId":"ci","userId":"u1","message":"hello from CI","channel":"email","messageId":"ci-smoke-1"}'
+          for i in 1 2; do
+            for try in $(seq 1 20); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' -X POST localhost:3000/notify -H 'content-type: application/json' -d "$body")
+              [ "$code" = 202 ] && break; sleep 3
+            done
+            [ "$code" = 202 ] || { echo "producer returned $code"; exit 1; }
+          done
+      - name: check it was delivered once and the duplicate was skipped
+        run: |
+          for i in $(seq 1 60); do
+            m=$(curl -s localhost:9100/metrics || true)
+            if echo "$m" | grep -q 'outcome="delivered"} 1' && echo "$m" | grep -q 'outcome="duplicate"} 1'; then
+              curl -s localhost:8081/stats; echo; exit 0
+            fi
+            sleep 3
+          done
+          curl -s localhost:9100/metrics | grep consumer_events || true
+          docker compose logs consumer; exit 1
+      - name: stop the stack
+        if: always()
+        run: docker compose down -v
